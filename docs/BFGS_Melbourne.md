@@ -118,6 +118,8 @@ A seleção da arquitetura com três neurónios é provisória e deverá ser seg
 
 ## 8. Reprodutibilidade
 
+`Antes da execução, é necessário garantir que o dataset daily-minimum-temperatures-in-me.csv está disponível na pasta data/.`
+
 As experiências podem ser reproduzidas a partir da raiz do projeto, utilizando GNU Octave:
 
 ```bash
