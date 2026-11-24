@@ -109,6 +109,12 @@ Os traços assinalam métricas sem valor registado nesta comparação. O AR(7) u
 
 A MLP apresentou o menor RMSE médio de validação nesta comparação. A diferença face à regressão linear sazonal foi de cerca de 0,041 °C. A significância estatística dessa diferença exigiria uma análise própria.
 
+### Visualização dos resultados
+
+- O gráfico de arquiteturas apresenta o RMSE de validação de cada semente para as MLP com 3, 5 e 8 neurónios escondidos. As barras representam a média ± um desvio-padrão amostral por arquitetura. [RMSE por arquitetura](../results/melbourne/rmse_validacao_mlp_media_desvio.png)
+- Os boxplots mostram os quartis, a mediana e a amplitude de cada arquitetura, com os valores individuais sobrepostos. Cada arquitetura tem apenas três sementes (`n = 3`), pelo que a distribuição deve ser interpretada com cautela. [Boxplots por arquitetura](../results/melbourne/boxplots_rmse_validacao_mlp.png)
+- O gráfico dos modelos compara a persistência, o AR(7), a regressão linear sazonal e a MLP com BFGS. Entre os modelos comparados, a MLP com três neurónios apresentou o menor RMSE médio de validação, de 2,2600 °C nas três sementes. [Comparação dos modelos](../results/melbourne/comparacao_rmse_validacao_modelos.png)
+
 ## 7. Diagnóstico de convergência
 
 O diagnóstico comparou os limites de 150, 300 e 600 iterações para a MLP com três neurónios escondidos e as sementes 7, 42 e 123. Para cada semente, os três treinos partiram dos mesmos parâmetros iniciais. Cada execução usou uma janela de sete dias, a normalização calculada com os alvos de treino e uma tolerância do gradiente de `1e-5`. A otimização usou o conjunto de treino e as métricas foram calculadas no conjunto de validação.
@@ -173,6 +179,14 @@ octave --quiet scripts/compare_bfgs_iteration_limits.m
 ```
 
 O primeiro comando compara os três limites para a semente 7 e mostra a perda de treino, a norma do gradiente e as métricas de validação. O segundo repete a comparação para as sementes 7, 42 e 123 e apresenta o RMSE médio e o desvio-padrão por limite. Ambos apresentam os resultados no terminal.
+
+### Gráficos de validação
+
+A partir da raiz do projeto, executa o comando abaixo no GNU Octave para reproduzir os três gráficos a partir dos resultados guardados.
+
+```bash
+octave --quiet scripts/plot_melbourne_validation_comparisons.m
+```
 
 ## 10. Trabalho futuro
 
