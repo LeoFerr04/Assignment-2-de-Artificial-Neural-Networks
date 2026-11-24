@@ -106,9 +106,27 @@ Para contextualizar os resultados, foram também implementados dois modelos de r
 
 A MLP apresentou o menor RMSE médio de validação nesta comparação. Contudo, a diferença relativamente à regressão linear foi pequena e não permite, por si só, concluir que existe uma superioridade estatisticamente significativa.
 
-## 7. Limitações
+## 7. Diagnóstico de convergência
 
-As nove experiências atingiram o limite de 150 iterações (`max_iter`), sem alcançar o critério de convergência baseado na norma do gradiente.
+O diagnóstico comparou os limites de 150, 300 e 600 iterações para a MLP com três neurónios escondidos e as sementes 7, 42 e 123. Para cada semente, os três treinos partiram dos mesmos parâmetros iniciais. Cada execução usou uma janela de sete dias, a normalização calculada com os alvos de treino e uma tolerância do gradiente de `1e-5`. A otimização usou o conjunto de treino e as métricas foram calculadas no conjunto de validação.
+
+| Limite de iterações | RMSE médio de validação (°C) | Desvio-padrão amostral entre sementes (°C) |
+|---:|---:|---:|
+| 150 | 2,260015 | 0,004953 |
+| 300 | 2,259227 | 0,012810 |
+| 600 | 2,260112 | 0,016884 |
+
+O limite de 300 iterações produziu o menor RMSE médio, com uma redução de cerca de 0,00079 °C face ao limite de 150. Com 600 iterações, o RMSE médio ficou ligeiramente acima dos valores obtidos com 150 e 300.
+
+A diferença observada entre 150 e 300 iterações é muito pequena e foi obtida com apenas três sementes aleatórias. Por esse motivo, os resultados não permitem estabelecer uma vantagem robusta da utilização de 300 iterações. Além disso, o aumento do número de iterações não conduziu a uma melhoria consistente do desempenho de validação em todas as sementes.
+
+A única execução que atingiu a tolerância do gradiente foi a da semente 123 com limite de 600 iterações. Parou na iteração 594 com o estado `grad_tol`. Para essa semente, o RMSE de validação subiu de 2,262815 °C com 150 iterações para 2,274683 °C no ponto de paragem. Neste caso, atingir o critério de convergência do treino coincidiu com um RMSE de validação mais elevado.
+
+Mantém-se provisoriamente o limite de 150 iterações nas experiências principais. Foi a configuração com menor dispersão do RMSE entre sementes e requer o menor orçamento de iterações por treino.
+
+## 8. Limitações
+
+As nove experiências da comparação de arquiteturas atingiram o limite de 150 iterações (`max_iter`), sem alcançar o critério de convergência baseado na norma do gradiente.
 
 Assim, os resultados representam o desempenho obtido com o orçamento computacional definido, não necessariamente o mínimo da função objetivo.
 
@@ -116,9 +134,9 @@ O número de arquiteturas e sementes analisadas também é limitado.
 
 A seleção da arquitetura com três neurónios é provisória e deverá ser seguida por uma avaliação final no conjunto de teste, após fixar a configuração do modelo.
 
-## 8. Reprodutibilidade
+## 9. Reprodutibilidade
 
-`Antes da execução, é necessário garantir que o dataset daily-minimum-temperatures-in-me.csv está disponível na pasta data/.`
+Antes da execução, é necessário garantir que o dataset `daily-minimum-temperatures-in-me.csv` está disponível na pasta `data/`.
 
 As experiências podem ser reproduzidas a partir da raiz do projeto, utilizando GNU Octave:
 
@@ -133,7 +151,18 @@ O script executa os nove treinos, calcula as métricas de validação e gera aut
 
 A execução reproduzida confirmou os valores apresentados nas experiências originais.
 
-## 9. Trabalho futuro
+### Diagnóstico de convergência
+
+A partir da raiz do projeto, executa os seguintes comandos no GNU Octave:
+
+```bash
+octave --quiet scripts/diagnose_bfgs_convergence.m
+octave --quiet scripts/compare_bfgs_iteration_limits.m
+```
+
+O primeiro comando compara os três limites para a semente 7 e mostra a perda de treino, a norma do gradiente e as métricas de validação. O segundo repete a comparação para as sementes 7, 42 e 123 e apresenta o RMSE médio e o desvio-padrão por limite. Ambos apresentam os resultados no terminal.
+
+## 10. Trabalho futuro
 
 As próximas etapas incluem a integração com os restantes componentes desenvolvidos pela equipa, a comparação final dos métodos de treino e a avaliação no conjunto de teste.
 
