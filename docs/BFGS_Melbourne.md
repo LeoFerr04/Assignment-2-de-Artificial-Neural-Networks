@@ -96,15 +96,18 @@ Os resultados da comparação das arquiteturas foram:
 
 A arquitetura com três neurónios escondidos apresentou o menor RMSE médio de validação entre as configurações experimentadas.
 
-Para contextualizar os resultados, foram também implementados dois modelos de referência:
+Os resultados de validação dos três modelos de referência e da MLP com BFGS estão na tabela seguinte.
 
-| Modelo | RMSE de validação (°C) |
-|---|---:|
-| Persistência | 2,5925 |
-| Regressão linear | 2,3008 |
-| MLP com BFGS — 3 neurónios (média de três sementes) | 2,2600 |
+| Modelo | RMSE de validação (°C) | MAE de validação (°C) | R² de validação |
+|---|---:|---:|---:|
+| Persistência | 2,5925 | — | — |
+| AR(7) com intercepto | 2,359835 | 1,880539 | 0,655292 |
+| Regressão linear sazonal com intercepto | 2,300801 | 1,863624 | 0,672323 |
+| MLP com BFGS — 3 neurónios (média de três sementes) | 2,2600 | — | — |
 
-A MLP apresentou o menor RMSE médio de validação nesta comparação. Contudo, a diferença relativamente à regressão linear foi pequena e não permite, por si só, concluir que existe uma superioridade estatisticamente significativa.
+Os traços assinalam métricas sem valor registado nesta comparação. O AR(7) utiliza as sete temperaturas anteriores. A regressão linear sazonal e a MLP usam também o seno e o cosseno do ciclo anual, num total de nove características. Os dois modelos lineares foram ajustados em 2528 amostras de treino e avaliados em 541 amostras de validação. Os resultados foram confirmados por decomposição QR.
+
+A MLP apresentou o menor RMSE médio de validação nesta comparação. A diferença face à regressão linear sazonal foi de cerca de 0,041 °C. A significância estatística dessa diferença exigiria uma análise própria.
 
 ## 7. Diagnóstico de convergência
 
@@ -150,6 +153,15 @@ O script executa os nove treinos, calcula as métricas de validação e gera aut
 - `results/melbourne/comparacao_arquiteturas_reproduzido.png`
 
 A execução reproduzida confirmou os valores apresentados nas experiências originais.
+
+### Modelos de referência lineares
+
+A partir da raiz do projeto, executa os dois scripts no GNU Octave para obter as métricas de validação.
+
+```bash
+octave --quiet scripts/run_melbourne_ar7_baseline.m
+octave --quiet scripts/run_melbourne_linear_seasonal_baseline.m
+```
 
 ### Diagnóstico de convergência
 
