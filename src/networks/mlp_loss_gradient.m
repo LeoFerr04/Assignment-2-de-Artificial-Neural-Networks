@@ -50,10 +50,10 @@ function [loss, gradient_blocks] = mlp_loss_gradient(blocks, X, y)
     hidden = tanh(bsxfun(@plus, X * W1.', b1.'));
     y_pred = hidden * W2.' + b2;
     residuals = y_pred - y;
-    loss = 0.5 * mean(residuals.^2);
+    loss = mean(residuals.^2);
 
     % A derivada da perda inclui a divisão pelo número de amostras.
-    delta_output = residuals ./ n_samples;
+    delta_output = (2 * residuals) ./ n_samples;
     delta_hidden = (delta_output * W2) .* (1 - hidden.^2);
     dW1 = delta_hidden.' * X;
     db1 = sum(delta_hidden, 1).';
