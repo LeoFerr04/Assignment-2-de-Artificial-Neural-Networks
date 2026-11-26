@@ -49,6 +49,8 @@ function lib = ann_lib()
     lib.evaluate_final = @ann_evaluate_final;
     lib.plot_convergence = @ann_plot_convergence;
     lib.run_eda = @ann_run_eda;
+    lib.full_tuning = @ann_full_tuning;
+    lib.full_final = @ann_full_final;
 
 end
 
@@ -1974,7 +1976,7 @@ function ann_evaluate_final(L, D, resultdir, outdir)
     if ~exist(outdir,'dir'), mkdir(outdir); end
     archs = {'Reference','Wide','Deep'};
     methods = {'Adam','Gradient_Descent','BFGS'};
-    allresults = zeros(270,7);
+    allresults = zeros(270,8);
     labels = cell(270,2);
     yreal = D.yte_original(:);
     best_validation = inf;
@@ -1983,7 +1985,7 @@ function ann_evaluate_final(L, D, resultdir, outdir)
     row = 0;
     fid = fopen(fullfile(outdir,'test_metrics.csv'),'w');
     if fid<0, error('Nao foi possivel escrever resultados.'); end
-    fprintf(fid, 'architecture,algorithm,seed,MSE,RMSE,MAE,R2,time_seconds,validation_MSE_scaled\n');
+    fprintf(fid, 'architecture,algorithm,seed,MSE,RMSE,MAE,R2,time_seconds,validation_MSE_scaled,gradient_evals\n');
     for a=1:3
         for m=1:3
             for rep=1:30
@@ -2008,11 +2010,21 @@ function ann_evaluate_final(L, D, resultdir, outdir)
                     allresults(row,6)=NaN;
                 end
                 allresults(row,7)=rep;
+                % Custo expresso em equivalentes de avaliacao full-batch.
+                if strcmp(methods{m},'BFGS') && ...
+                        isfield(S,'info') && isfield(S.info,'n_evals')
+                    allresults(row,8)=S.info.n_evals;
+                elseif isfield(S,'history') && ...
+                        isfield(S.history,'n_evals')
+                    allresults(row,8)=S.history.n_evals;
+                else
+                    allresults(row,8)=NaN;
+                end
                 labels{row,1}=archs{a};
                 labels{row,2}=methods{m};
-                fprintf(fid,'%s,%s,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g\n', ...
+                fprintf(fid,'%s,%s,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g\n', ...
                     archs{a},methods{m},rep,met.mse,met.rmse,met.mae, ...
-                    met.r2,allresults(row,5),allresults(row,6));
+                    met.r2,allresults(row,5),allresults(row,6),allresults(row,8));
                 % Escolher figura com base APENAS na validacao.
                 if isfinite(allresults(row,6)) && ...
                         allresults(row,6)<best_validation
@@ -2028,18 +2040,20 @@ function ann_evaluate_final(L, D, resultdir, outdir)
     fid = fopen(fullfile(outdir,'summary.csv'),'w');
     fprintf(fid,['architecture,algorithm,MSE_mean,MSE_sd,RMSE_mean,RMSE_sd,' ...
         'MAE_mean,MAE_sd,R2_mean,R2_sd,RMSE_median,RMSE_best,' ...
-        'RMSE_worst,time_mean_seconds\n']);
+        'RMSE_worst,time_mean_seconds,R2_median,R2_best,' ...
+        'R2_worst,gradient_evals_mean\n']);
     for a=1:3
         for m=1:3
             sel = strcmp(labels(:,1),archs{a}) & ...
                 strcmp(labels(:,2),methods{m});
             z=allresults(sel,:);
             fprintf(fid, ...
-                '%s,%s,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g\n', ...
+                '%s,%s,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g\n', ...
                 archs{a},methods{m},mean(z(:,1)),std(z(:,1)), ...
                 mean(z(:,2)),std(z(:,2)),mean(z(:,3)),std(z(:,3)), ...
                 mean(z(:,4)),std(z(:,4)),median(z(:,2)), ...
-                min(z(:,2)),max(z(:,2)),mean(z(:,5)));
+                min(z(:,2)),max(z(:,2)),mean(z(:,5)), ...
+                median(z(:,4)),max(z(:,4)),min(z(:,4)),mean(z(:,8)));
             fprintf('%-10s %-18s RMSE %.4f +/- %.4f %s\n', ...
                 archs{a},methods{m},mean(z(:,2)),std(z(:,2)),D.unit);
         end
@@ -2408,4 +2422,168 @@ function ann_run_eda(D, outdir)
         fprintf('AVISO: EDA visual indisponivel: %s\n',err.message);
         try close all; catch, end
     end
+end
+
+% ============================================================
+% Fluxo principal - funcoes auxiliares do script principal.
+% ============================================================
+function best_rates = ann_full_tuning(L,D,cfg,workdir,archs)
+    outdir = fullfile(workdir,'tuning');
+    if ~exist(outdir,'dir'),mkdir(outdir);end
+    checkpoint = fullfile(outdir,'tuning_200ep.mat');
+    nrep = cfg.n_repeticoes_tuning;
+    values = NaN(3,2,numel(cfg.learning_rates),nrep);
+    if exist(checkpoint,'file')
+        saved=load(checkpoint);
+        if isfield(saved,'values') && isequal(size(saved.values),size(values))
+            values=saved.values;
+            fprintf('Checkpoint de tuning carregado.\n');
+        end
+    end
+    for a=1:3
+        layers=ann_architecture_layers(size(D.Xtr,2),a);
+        for m=1:2
+            for lr=1:numel(cfg.learning_rates)
+                for rep=1:nrep
+                    if isfinite(values(a,m,lr,rep)),continue;end
+                    [theta0,~]=L.init_theta(layers,rep);
+                    batch_fn=@(theta,indices) L.objective_batch( ...
+                        L,theta,layers,D.Xtr(indices,:),D.ytr(indices));
+                    train_fn=@(theta) L.objective_loss( ...
+                        L,theta,layers,D.Xtr,D.ytr);
+                    val_fn=@(theta) L.objective_loss( ...
+                        L,theta,layers,D.Xva,D.yva);
+                    opts=struct('learning_rate',cfg.learning_rates(lr), ...
+                        'batch_size',cfg.batch_size, ...
+                        'max_epochs',cfg.budget,'seed',42);
+                    if m==1
+                        [theta_best,~]=L.train_adam(theta0,batch_fn, ...
+                            train_fn,val_fn,size(D.Xtr,1),opts);
+                    else
+                        [theta_best,~]=L.train_gradient_descent(theta0, ...
+                            batch_fn,train_fn,val_fn,size(D.Xtr,1),opts);
+                    end
+                    score=val_fn(theta_best);
+                    if ~isfinite(score),score=realmax;end
+                    values(a,m,lr,rep)=score;
+                    save(checkpoint,'values','cfg');
+                    fprintf('TUNING %s %s lr %.6g rep %02d: %.5f\n', ...
+                        archs{a},ann_algorithm_name(m), ...
+                        cfg.learning_rates(lr),rep,score);
+                end
+            end
+        end
+    end
+    best_rates=zeros(3,2);
+    fid=fopen(fullfile(outdir,'selected_learning_rates.csv'),'w');
+    fprintf(fid,'architecture,algorithm,learning_rate,validation_MSE_mean\n');
+    for a=1:3
+        for m=1:2
+            scores=zeros(numel(cfg.learning_rates),1);
+            for k=1:numel(scores)
+                x=reshape(values(a,m,k,:),[],1);
+                scores(k)=mean(x);
+            end
+            [v,idx]=min(scores);
+            best_rates(a,m)=cfg.learning_rates(idx);
+            fprintf(fid,'%s,%s,%.10g,%.10g\n', ...
+                archs{a},ann_algorithm_name(m),best_rates(a,m),v);
+            fprintf('LR otimizado %s %s = %.7g\n', ...
+                archs{a},ann_algorithm_name(m),best_rates(a,m));
+        end
+    end
+    fclose(fid);
+    save(fullfile(outdir,'selected_learning_rates.mat'),'best_rates');
+end
+
+% ============================================================
+% Comparacao final: 3 arquiteturas x 3 algoritmos x 30 seeds.
+% O ficheiro por modelo guarda pesos iniciais, melhores pesos,
+% historico, configuracao, tempo e perda de validacao.
+% ============================================================
+function ann_full_final(L,D,cfg,workdir,archs,methods,best_rates)
+    outdir=fullfile(workdir,'final');
+    if ~exist(outdir,'dir'),mkdir(outdir);end
+    for a=1:3
+        layers=ann_architecture_layers(size(D.Xtr,2),a);
+        for m=1:3
+            for rep=1:cfg.n_repeticoes_final
+                dest=fullfile(outdir,sprintf('%s_%s_rep%02d.mat', ...
+                    archs{a},methods{m},rep));
+                if exist(dest,'file'),continue;end
+                [theta0,blocks]=L.init_theta(layers,rep);
+                batch_fn=@(theta,indices) L.objective_batch( ...
+                    L,theta,layers,D.Xtr(indices,:),D.ytr(indices));
+                train_fn=@(theta) L.objective_loss( ...
+                    L,theta,layers,D.Xtr,D.ytr);
+                val_fn=@(theta) L.objective_loss( ...
+                    L,theta,layers,D.Xva,D.yva);
+                opts=struct();
+                tic;
+                if m<3
+                    opts=struct('learning_rate',best_rates(a,m), ...
+                        'batch_size',cfg.batch_size, ...
+                        'max_epochs',cfg.budget,'seed',42);
+                    if m==1
+                        [theta_best,history]=L.train_adam( ...
+                            theta0,batch_fn,train_fn,val_fn, ...
+                            size(D.Xtr,1),opts);
+                    else
+                        [theta_best,history]=L.train_gradient_descent( ...
+                            theta0,batch_fn,train_fn,val_fn, ...
+                            size(D.Xtr,1),opts);
+                    end
+                    info=struct();
+                else
+                    % Todos os pontos avaliados por Armijo contam.
+                    % max_evals=200: mesmo orÃ§amento de gradiente
+                    % em termos de equivalentes ao dataset completo.
+                    loss_fn=@(b) L.mlp_deep_loss_gradient(b,D.Xtr,D.ytr);
+                    [obj_bfgs,checktheta]=L.make_network_objective( ...
+                        blocks,loss_fn);
+                    assert(norm(theta0-checktheta)<1e-10);
+                    opts=struct('max_iter',cfg.budget*3, ...
+                        'max_evals',cfg.budget,'max_params',2000, ...
+                        'grad_tol',1e-6,'step_tol',1e-10, ...
+                        'verbose',false);
+                    [theta_best,info]=L.bfgs_optimize( ...
+                        obj_bfgs,theta0,opts,val_fn);
+                    history=struct('train_loss',info.loss_history, ...
+                        'val_loss',info.val_loss_history, ...
+                        'epoch_equivalents',info.epoch_equivalents, ...
+                        'n_evals',info.n_evals);
+                end
+                tempo=toc;
+                mse_validacao=val_fn(theta_best);
+                if ~isfinite(mse_validacao)
+                    error('Loss invalida %s / %s / seed %d', ...
+                        D.name,methods{m},rep);
+                end
+                arquitetura=archs{a};
+                algoritmo=methods{m};
+                save(dest,'theta_best','theta0','history','info', ...
+                    'tempo','mse_validacao','opts','layers','rep', ...
+                    'arquitetura','algoritmo');
+                fprintf('FINAL %s %s rep%02d MSEval %.6g time %.1fs\n', ...
+                    arquitetura,algoritmo,rep,mse_validacao,tempo);
+            end
+        end
+    end
+end
+
+function layers=ann_architecture_layers(n_inputs,a)
+    switch a
+        case 1
+            layers=[n_inputs,10,1];
+        case 2
+            layers=[n_inputs,100,1];
+        case 3
+            layers=[n_inputs,repmat(10,1,10),1];
+        otherwise
+            error('Arquitetura invalida.');
+    end
+end
+
+function name=ann_algorithm_name(m)
+    if m==1,name='Adam';else name='Gradient_Descent';end
 end
