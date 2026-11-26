@@ -41,6 +41,15 @@ function lib = ann_lib()
         @linear_regression_baseline;
     lib.persistence_baseline = @persistence_baseline;
 
+    % Fluxo completo integrado: dois ficheiros .m na entrega.
+    lib.prepare_dataset = @ann_prepare_dataset;
+    lib.init_theta = @ann_init_theta;
+    lib.objective_batch = @ann_objective_batch;
+    lib.objective_loss = @ann_objective_loss;
+    lib.evaluate_final = @ann_evaluate_final;
+    lib.plot_convergence = @ann_plot_convergence;
+    lib.run_eda = @ann_run_eda;
+
 end
 
 
@@ -449,7 +458,11 @@ function [theta_best, history] = train_adam( ...
     end
 
     if ~isfield(opts, 'max_epochs')
-        opts.max_epochs = 100;
+        if isfield(opts, 'epochs')
+            opts.max_epochs = opts.epochs;
+        else
+            opts.max_epochs = 100;
+        end
     end
 
     if ~isfield(opts, 'seed')
@@ -475,6 +488,7 @@ function [theta_best, history] = train_adam( ...
     history.train_loss = zeros(opts.max_epochs, 1);
     history.val_loss = zeros(opts.max_epochs, 1);
     history.epoch = (1:opts.max_epochs).';
+    history.epoch_equivalents = (1:opts.max_epochs).';
     history.n_evals = 0;
 
     for epoch = 1:opts.max_epochs
@@ -554,7 +568,11 @@ function [theta_best, history] = train_gradient_descent( ...
     end
 
     if ~isfield(opts, 'max_epochs')
-        opts.max_epochs = 100;
+        if isfield(opts, 'epochs')
+            opts.max_epochs = opts.epochs;
+        else
+            opts.max_epochs = 100;
+        end
     end
 
     if ~isfield(opts, 'seed')
@@ -571,6 +589,7 @@ function [theta_best, history] = train_gradient_descent( ...
     history.train_loss = zeros(opts.max_epochs, 1);
     history.val_loss = zeros(opts.max_epochs, 1);
     history.epoch = (1:opts.max_epochs).';
+    history.epoch_equivalents = (1:opts.max_epochs).';
     history.n_evals = 0;
 
     for epoch = 1:opts.max_epochs
@@ -674,7 +693,8 @@ function [theta, info] = bfgs_optimize( ...
         'max_iter', 200, ...
         'grad_tol', 1e-6, ...
         'step_tol', 1e-10, ...
-        'max_params', 2000);
+        'max_params', 2000, ...
+        'max_evals', 1e12);
 
     fields = fieldnames(settings);
 
@@ -808,6 +828,7 @@ function [theta, info] = bfgs_optimize( ...
     info.theta_best = [];
     info.n_val_evals = 0;
     info.train_theta_final = [];
+    info.epoch_equivalents = 1; % Uma avaliacao full-batch inicial.
 
     % Avaliar a validacao inicial.
 
@@ -851,7 +872,8 @@ function [theta, info] = bfgs_optimize( ...
 
     % Ciclo principal BFGS.
 
-    while info.iterations < settings.max_iter
+    while info.iterations < settings.max_iter && ...
+            info.n_evals < settings.max_evals
 
         % Direcao de descida.
 
@@ -869,6 +891,11 @@ function [theta, info] = bfgs_optimize( ...
             direction = -gradient;
         end
 
+        % Limitar o custo: cada tentativa da pesquisa linear conta
+        % como uma avaliacao completa do treino.
+        line_search_options.max_evals = ...
+            settings.max_evals - info.n_evals;
+
         % Pesquisa linear de Armijo.
 
         [alpha, loss_new, gradient_new, ...
@@ -884,7 +911,11 @@ function [theta, info] = bfgs_optimize( ...
 
         if ~accepted
 
-            info.status = 'line_search_failed';
+            if info.n_evals >= settings.max_evals
+                info.status = 'budget';
+            else
+                info.status = 'line_search_failed';
+            end
 
             break;
         end
@@ -957,6 +988,7 @@ function [theta, info] = bfgs_optimize( ...
         % Registar a perda de treino.
 
         info.loss_history(end + 1, 1) = loss;
+        info.epoch_equivalents(end + 1, 1) = info.n_evals;
 
         info.grad_norm_history(end + 1, 1) = grad_norm;
 
@@ -1026,6 +1058,11 @@ function [theta, info] = bfgs_optimize( ...
 
             break;
         end
+    end
+
+    if info.n_evals >= settings.max_evals && ...
+            strcmp(info.status, 'max_iter')
+        info.status = 'budget';
     end
 
     % Guardar os parametros da ultima iteracao.
@@ -1114,7 +1151,13 @@ function [alpha, new_loss, new_gradient, success, n_evals] = bfgs_line_search(ob
     current_theta = double(theta);
     trial_alpha = settings.alpha0;
     n_backtracks = 0;
-    while trial_alpha >= settings.min_alpha
+    if isfield(options, 'max_evals')
+        remaining_evals = options.max_evals;
+    else
+        remaining_evals = inf;
+    end
+    while trial_alpha >= settings.min_alpha && ...
+            n_evals < remaining_evals
         trial_theta = current_theta + trial_alpha * search_direction;
         if all(~isnan(trial_theta) & ~isinf(trial_theta))
             [trial_loss, trial_gradient] = objective_fn(trial_theta);
@@ -1807,4 +1850,562 @@ function y_pred = persistence_baseline(X, p)
 
     % A coluna p contém a última temperatura, na escala original.
     y_pred = X(:, p);
+end
+
+% ============================================================
+% Funcoes integradas do estudo (sem ficheiros .m auxiliares)
+% ============================================================
+
+function D = ann_prepare_dataset(L, name, root)
+    name = lower(name);
+    D = struct();
+    D.name = name;
+    if strcmp(name, 'concrete')
+        path = fullfile(root, 'src', 'concrete', 'Concrete_Data.csv');
+        if ~exist(path, 'file')
+            path = fullfile(root, 'Concrete_Data.csv');
+        end
+        if ~exist(path, 'file')
+            error('Falta o CSV do Concrete: %s', path);
+        end
+        d = L.concrete_preprocess(path);
+        D.Xtr = d.Xtr;
+        D.Xva = d.Xva;
+        D.Xte = d.Xte;
+        D.ytr = d.ytr;
+        D.yva = d.yva;
+        D.yte = d.yte;
+        D.ytr_original = d.ytr_original(:);
+        D.yte_original = d.yte_original(:);
+        D.mu = d.media_y;
+        D.sigma = d.desvio_y;
+        D.unit = 'MPa';
+        D.raw_inputs_train = bsxfun(@plus, ...
+            bsxfun(@times, d.Xtr, d.desvio_X), d.media_X);
+        D.raw_inputs_test = bsxfun(@plus, ...
+            bsxfun(@times, d.Xte, d.desvio_X), d.media_X);
+    elseif strcmp(name, 'melbourne')
+        path = fullfile(root, 'data', 'daily-minimum-temperatures-in-me.csv');
+        if ~exist(path, 'file')
+            error('Falta o CSV de Melbourne: %s', path);
+        end
+        [dates, temperatures] = L.load_melbourne(path);
+        [X, y, target_dates] = ...
+            L.create_melbourne_windows(dates, temperatures, 7);
+        [Xs, ~] = L.add_melbourne_seasonality(X, target_dates);
+        [itr, iva, ite] = ...
+            L.split_melbourne_chronological(target_dates, .70, .15);
+        [D.Xtr, D.Xva, D.Xte, D.ytr, D.yva, D.yte, pars] = ...
+            L.normalize_melbourne_data( ...
+                Xs(itr,:), Xs(iva,:), Xs(ite,:), ...
+                y(itr), y(iva), y(ite));
+        D.ytr_original = y(itr);
+        D.yte_original = y(ite);
+        D.mu = pars.temp_mean;
+        D.sigma = pars.temp_std;
+        D.unit = 'C';
+        D.raw_inputs_train = X(itr,:);
+        D.raw_inputs_test = X(ite,:);
+        D.test_dates = target_dates(ite);
+        D.train_dates = target_dates(itr);
+        D.dates = dates;
+        D.temperatures = temperatures;
+        if max(abs(D.ytr_original(:) * 0 + ...
+                D.mu - mean(D.ytr_original))) > 1e-8
+            error('Possivel leakage no escalonamento Melbourne.');
+        end
+    else
+        error('Dataset desconhecido: %s', name);
+    end
+    if any(~isfinite([D.Xtr(:); D.Xva(:); D.Xte(:); ...
+            D.ytr(:); D.yva(:); D.yte(:)]))
+        error('Dados normalizados contem valores invalidos.');
+    end
+    fprintf('%s: treino %d | validacao %d | teste %d | entradas %d\n', ...
+        name, size(D.Xtr,1), size(D.Xva,1), ...
+        size(D.Xte,1), size(D.Xtr,2));
+end
+
+function [theta0, blocks] = ann_init_theta(layers, seed)
+    rng(seed);
+    n = numel(layers) - 1;
+    blocks = cell(1, 2*n);
+    for k=1:n
+        ni = layers(k);
+        no = layers(k+1);
+        lim = sqrt(6 / (ni + no));
+        blocks{2*k-1} = (2 * rand(no,ni)-1) * lim;
+        blocks{2*k} = zeros(no,1);
+    end
+    theta0 = [];
+    for k=1:numel(blocks)
+        theta0 = [theta0; blocks{k}(:)];
+    end
+end
+
+function [loss, grad] = ann_objective_batch(L, theta, layers, X, y)
+    n = numel(layers)-1;
+    blocks = cell(1,2*n);
+    pos = 1;
+    for k=1:n
+        nw = layers(k)*layers(k+1);
+        blocks{2*k-1} = reshape(theta(pos:pos+nw-1), ...
+            layers(k+1),layers(k));
+        pos=pos+nw;
+        blocks{2*k} = theta(pos:pos+layers(k+1)-1);
+        pos=pos+layers(k+1);
+    end
+    [loss, dblocks] = L.mlp_deep_loss_gradient(blocks, X, y);
+    grad = zeros(numel(theta),1);
+    pos = 1;
+    for k=1:numel(dblocks)
+        g = dblocks{k}(:);
+        grad(pos:pos+numel(g)-1) = g;
+        pos = pos + numel(g);
+    end
+end
+
+function loss = ann_objective_loss(L, theta, layers, X, y)
+    yp = L.mlp_deep_predict(theta, X, layers);
+    loss = mean((yp(:)-y(:)).^2);
+end
+
+function ann_evaluate_final(L, D, resultdir, outdir)
+    if ~exist(outdir,'dir'), mkdir(outdir); end
+    archs = {'Reference','Wide','Deep'};
+    methods = {'Adam','Gradient_Descent','BFGS'};
+    allresults = zeros(270,7);
+    labels = cell(270,2);
+    yreal = D.yte_original(:);
+    best_validation = inf;
+    bestprediction = [];
+    bestname = '';
+    row = 0;
+    fid = fopen(fullfile(outdir,'test_metrics.csv'),'w');
+    if fid<0, error('Nao foi possivel escrever resultados.'); end
+    fprintf(fid, 'architecture,algorithm,seed,MSE,RMSE,MAE,R2,time_seconds,validation_MSE_scaled\n');
+    for a=1:3
+        for m=1:3
+            for rep=1:30
+                path = fullfile(resultdir, sprintf('%s_%s_rep%02d.mat', ...
+                    archs{a},methods{m},rep));
+                if ~exist(path,'file')
+                    fclose(fid);
+                    error('Modelo em falta: %s',path);
+                end
+                S=load(path);
+                yp_scaled = L.mlp_deep_predict(S.theta_best,D.Xte,S.layers);
+                yp = yp_scaled(:)*D.sigma + D.mu;
+                met = L.regression_metrics(yreal,yp);
+                row=row+1;
+                allresults(row,1:4) = ...
+                    [met.mse met.rmse met.mae met.r2];
+                if isfield(S,'tempo'), allresults(row,5)=S.tempo;
+                else allresults(row,5)=NaN; end
+                if isfield(S,'mse_validacao')
+                    allresults(row,6)=S.mse_validacao;
+                else
+                    allresults(row,6)=NaN;
+                end
+                allresults(row,7)=rep;
+                labels{row,1}=archs{a};
+                labels{row,2}=methods{m};
+                fprintf(fid,'%s,%s,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g\n', ...
+                    archs{a},methods{m},rep,met.mse,met.rmse,met.mae, ...
+                    met.r2,allresults(row,5),allresults(row,6));
+                % Escolher figura com base APENAS na validacao.
+                if isfinite(allresults(row,6)) && ...
+                        allresults(row,6)<best_validation
+                    best_validation=allresults(row,6);
+                    bestprediction=yp;
+                    bestname=sprintf('%s / %s / seed %d', ...
+                        archs{a},methods{m},rep);
+                end
+            end
+        end
+    end
+    fclose(fid);
+    fid = fopen(fullfile(outdir,'summary.csv'),'w');
+    fprintf(fid,['architecture,algorithm,MSE_mean,MSE_sd,RMSE_mean,RMSE_sd,' ...
+        'MAE_mean,MAE_sd,R2_mean,R2_sd,RMSE_median,RMSE_best,' ...
+        'RMSE_worst,time_mean_seconds\n']);
+    for a=1:3
+        for m=1:3
+            sel = strcmp(labels(:,1),archs{a}) & ...
+                strcmp(labels(:,2),methods{m});
+            z=allresults(sel,:);
+            fprintf(fid, ...
+                '%s,%s,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g,%.10g\n', ...
+                archs{a},methods{m},mean(z(:,1)),std(z(:,1)), ...
+                mean(z(:,2)),std(z(:,2)),mean(z(:,3)),std(z(:,3)), ...
+                mean(z(:,4)),std(z(:,4)),median(z(:,2)), ...
+                min(z(:,2)),max(z(:,2)),mean(z(:,5)));
+            fprintf('%-10s %-18s RMSE %.4f +/- %.4f %s\n', ...
+                archs{a},methods{m},mean(z(:,2)),std(z(:,2)),D.unit);
+        end
+    end
+    fclose(fid);
+    [base1,base2,base1name,base2name] = ann_baselines(L,D);
+    m1=L.regression_metrics(yreal,base1);
+    if isempty(base2)
+        m2=struct('mse',NaN,'rmse',NaN,'mae',NaN,'r2',NaN);
+    else
+        m2=L.regression_metrics(yreal,base2);
+    end
+    fid=fopen(fullfile(outdir,'baselines.csv'),'w');
+    fprintf(fid,'baseline,MSE,RMSE,MAE,R2\n');
+    fprintf(fid,'%s,%.10g,%.10g,%.10g,%.10g\n', ...
+        base1name,m1.mse,m1.rmse,m1.mae,m1.r2);
+    if ~isempty(base2)
+        fprintf(fid,'%s,%.10g,%.10g,%.10g,%.10g\n', ...
+            base2name,m2.mse,m2.rmse,m2.mae,m2.r2);
+    end
+    fclose(fid);
+    fprintf('Baselines: %s RMSE %.4f | %s RMSE %.4f\n', ...
+        base1name,m1.rmse,base2name,m2.rmse);
+    save(fullfile(outdir,'evaluation.mat'), 'allresults', 'labels', ...
+        'bestprediction','bestname','best_validation','yreal');
+    plotsdir = fullfile(outdir,'plots');
+    if ~exist(plotsdir,'dir'), mkdir(plotsdir); end
+    try
+        f=figure('visible','off','position',[100 100 1180 580]); hold on;
+        for a=1:3
+            for m=1:3
+                j=(a-1)*3+m;
+                sel=strcmp(labels(:,1),archs{a}) & ...
+                    strcmp(labels(:,2),methods{m});
+                vals=sort(allresults(sel,2));
+                q1=ann_quantile(vals,.25);
+                q2=ann_quantile(vals,.50);
+                q3=ann_quantile(vals,.75);
+                plot([j j],[min(vals) max(vals)],'-','color',[.4 .4 .4]);
+                patch([j-.3 j+.3 j+.3 j-.3], ...
+                    [q1 q1 q3 q3],[.75 .83 .93], ...
+                    'edgecolor',[.15 .25 .45]);
+                plot([j-.3 j+.3],[q2 q2],'-','color',[.8 .2 .2], ...
+                    'linewidth',2);
+                plot(j*ones(numel(vals),1),vals,'k.');
+            end
+        end
+        set(gca,'xtick',1:9, 'xticklabel', ...
+            {'Ref Adam','Ref GD','Ref BFGS','Wide Adam','Wide GD', ...
+             'Wide BFGS','Deep Adam','Deep GD','Deep BFGS'});
+        ylabel(['Test RMSE (' D.unit ')']); title([D.name ' - 30 seeds']);
+        grid on;
+        print(f,fullfile(plotsdir,'test_rmse_boxplots.png'),'-dpng','-r140'); close(f);
+        if ~isempty(bestprediction)
+            f=figure('visible','off','position',[100 100 1100 450]);
+            if strcmp(D.name,'concrete')
+                plot(yreal,bestprediction,'b.'); hold on;
+                bounds=[min([yreal;bestprediction]), ...
+                    max([yreal;bestprediction])];
+                plot(bounds,bounds,'k--','linewidth',1);
+                xlabel('Measured strength (MPa)');
+                ylabel('Predicted strength (MPa)');
+                legend('Model','Ideal prediction','location','best');
+            else
+                plot(yreal,'k-'); hold on; plot(bestprediction,'b-');
+                xlabel('Test sample (chronological)');
+                ylabel('Minimum temperature (C)');
+                legend('Observed','Forecast','location','best');
+            end
+            title(['Prediction vs observed: ' bestname]); grid on;
+            print(f,fullfile(plotsdir,'prediction.png'),'-dpng','-r140'); close(f);
+            if strcmp(D.name,'melbourne')
+                % Zoom cronologico na primeira janela do conjunto de teste.
+                iz=1:min(90,numel(yreal));
+                f=figure('visible','off','position',[100 100 1150 450]);
+                plot(iz,yreal(iz),'k-','linewidth',1.2); hold on;
+                plot(iz,bestprediction(iz),'b-','linewidth',1.2);
+                xlabel('Test sample (first 90 days)');
+                ylabel('Daily minimum temperature (C)');
+                title(['Melbourne prediction zoom: ' bestname]);
+                legend('Observed','Forecast','location','best'); grid on;
+                print(f,fullfile(plotsdir,'prediction_zoom.png'), ...
+                    '-dpng','-r140'); close(f);
+            end
+            f=figure('visible','off');
+            hist(yreal-bestprediction,30);
+            xlabel(['Residual (' D.unit ')']); ylabel('Frequency');
+            title(['Residual distribution: ' bestname]); grid on;
+            print(f,fullfile(plotsdir,'residual_histogram.png'),'-dpng','-r140'); close(f);
+        end
+    catch err
+        fprintf('AVISO: Figuras de avaliacao indisponiveis: %s\n',err.message);
+        try close all; catch, end
+    end
+    fprintf('Metricas e baselines: %s\n',outdir);
+end
+
+function [pred1,pred2,name1,name2] = ann_baselines(L,D)
+    if strcmp(D.name,'concrete')
+        pred1=L.linear_regression_baseline( ...
+            D.raw_inputs_train,D.ytr_original,D.raw_inputs_test);
+        pred2=[];
+        name1='Linear_regression';
+        name2='N_A';
+    else
+        % Persistence = observation one calendar day before target.
+        % A preprocessing window guarantees the date exists.
+        pred1=zeros(numel(D.test_dates),1);
+        for k=1:numel(pred1)
+            ix=find(abs(D.dates-(D.test_dates(k)-1))<1e-8,1);
+            if isempty(ix), error('Dia anterior nao encontrado.'); end
+            pred1(k)=D.temperatures(ix);
+        end
+        % Linear autoregressive baseline, only train used to fit.
+        pred2=L.linear_regression_baseline( ...
+            D.raw_inputs_train,D.ytr_original,D.raw_inputs_test);
+        name1='Persistence';
+        name2='Linear_AR7';
+    end
+end
+
+function ann_plot_convergence(D, resultdir, outdir)
+    if ~exist(outdir,'dir'), mkdir(outdir); end
+    archs={'Reference','Wide','Deep'};
+    algs={'Adam','Gradient_Descent','BFGS'};
+    palette=[.2 .4 .8;.8 .35 .2;.2 .6 .4];
+    for a=1:3
+        try
+            f=figure('visible','off','position',[100 100 1100 650]); hold on;
+            legends={}; approximated=false;
+            for m=1:3
+                traces=cell(30,2);
+                axesx=cell(30,1);
+                for rep=1:30
+                    path=fullfile(resultdir,sprintf('%s_%s_rep%02d.mat', ...
+                        archs{a},algs{m},rep));
+                    S=load(path);
+                    h=S.history;
+                    tr=h.train_loss(:);
+                    va=h.val_loss(:);
+                    n=min(numel(tr),numel(va));
+                    tr=tr(1:n);va=va(1:n);
+                    if isfield(h,'epoch_equivalents') && ...
+                            numel(h.epoch_equivalents)==n
+                        xx=h.epoch_equivalents(:);
+                    elseif m==3
+                        if isfield(S,'info') && isfield(S.info,'n_evals')
+                            total=S.info.n_evals;
+                        elseif isfield(h,'n_evals')
+                            total=h.n_evals;
+                        else
+                            total=n;
+                        end
+                        xx=linspace(1,total,n)';
+                        approximated=true;
+                    else
+                        xx=(1:n)';
+                    end
+                    axesx{rep}=xx;
+                    traces{rep,1}=tr;
+                    traces{rep,2}=va;
+                end
+                lo_x=max(cellfun(@min,axesx));
+                hi_x=min(cellfun(@max,axesx));
+                if lo_x>=hi_x, continue; end
+                gx=linspace(lo_x,hi_x,180)';
+                for t=1:2
+                    mat=NaN(numel(gx),30);
+                    for rep=1:30
+                        [xu,ia]=unique(axesx{rep});
+                        vu=traces{rep,t};vu=vu(ia);
+                        if numel(xu)>=2
+                            mat(:,rep)=interp1(xu,vu,gx,'linear');
+                        end
+                    end
+                    low=NaN(size(gx));mid=low;high=low;
+                    for i=1:numel(gx)
+                        z=sort(mat(i,isfinite(mat(i,:))));
+                        if ~isempty(z)
+                            low(i)=ann_quantile(z,.25);
+                            mid(i)=ann_quantile(z,.50);
+                            high(i)=ann_quantile(z,.75);
+                        end
+                    end
+                    low=max(eps,low);mid=max(eps,mid);high=max(eps,high);
+                    col=palette(m,:);
+                    patch([gx;flipud(gx)],[low;flipud(high)],col, ...
+                        'facealpha',.12,'edgecolor','none', ...
+                        'handlevisibility','off');
+                    if t==1, sty='-';kind='train';
+                    else sty='--';kind='validation'; end
+                    plot(gx,mid,sty,'color',col,'linewidth',2);
+                    legends{end+1}=[algs{m} ' ' kind];
+                end
+            end
+            set(gca,'yscale','log'); grid on;
+            xlabel('Full-data epoch equivalents');
+            ylabel('MSE (training-normalized target)');
+            title([D.name ' - ' archs{a} ' / median and IQR (30 seeds)']);
+            legend(legends,'location','northeastoutside');
+            if approximated
+                text(.02,.04, ...
+                    'BFGS x-axis estimated: historical checkpoints lack cumulative counts', ...
+                    'units','normalized','fontsize',9,'color',[.7 .1 .1]);
+            end
+            print(f,fullfile(outdir,[D.name '_' archs{a} '_convergence.png']), ...
+                '-dpng','-r140');close(f);
+        catch err
+            fprintf('AVISO: Grafico de convergencia %s: %s\n', ...
+                archs{a},err.message);
+            try close all; catch, end
+        end
+    end
+end
+
+function q=ann_quantile(v,p)
+    v=sort(v(:));
+    h=1+(numel(v)-1)*p;
+    low=floor(h); high=ceil(h);
+    q=v(low)+(h-low)*(v(high)-v(low));
+end
+
+function ann_run_eda(D, outdir)
+    if ~exist(outdir,'dir'),mkdir(outdir);end
+    try
+        f=figure('visible','off');
+        hist(D.ytr_original,30);
+        title([D.name ' - training target distribution']);
+        xlabel(['Target (' D.unit ')']);ylabel('Count');grid on;
+        print(f,fullfile(outdir,'train_target_histogram.png'),'-dpng','-r140');close(f);
+        f=figure('visible','off');
+        if strcmp(D.name,'melbourne')
+            plot(D.dates,D.temperatures,'linewidth',.5);
+            datetick('x','yyyy','keeplimits');
+            xlabel('Year');ylabel('Daily minimum temperature (C)');
+            title('Melbourne - complete daily series');
+        else
+            scatter(D.raw_inputs_train(:,1),D.ytr_original,10,'filled');
+            xlabel('Cement (kg/m3)');ylabel('Concrete strength (MPa)');
+            title('Concrete - train relationship');
+        end
+        grid on;
+        print(f,fullfile(outdir,'eda_relationship.png'),'-dpng','-r140');close(f);
+        if strcmp(D.name,'concrete')
+            % Nove histogramas, com dados de treino em unidades originais.
+            f=figure('visible','off','position',[100 100 1150 850]);
+            Z=[D.raw_inputs_train, D.ytr_original];
+            for k=1:9
+                subplot(3,3,k);hist(Z(:,k),22);
+                title(sprintf('Concrete: variable %d',k)); grid on;
+            end
+            print(f,fullfile(outdir,'concrete_nine_histograms.png'), ...
+                '-dpng','-r130');close(f);
+            f=figure('visible','off','position',[100 100 1000 850]);
+            for i=1:4
+                for j=1:4
+                    subplot(4,4,(i-1)*4+j);
+                    if i==j
+                        hist(D.raw_inputs_train(:,i),20);
+                    else
+                        plot(D.raw_inputs_train(:,j), ...
+                             D.raw_inputs_train(:,i),'k.','markersize',3);
+                    end
+                    if i==4,xlabel(sprintf('X%d',j));end
+                    if j==1,ylabel(sprintf('X%d',i));end
+                end
+            end
+            print(f,fullfile(outdir,'concrete_scatter_matrix_sample.png'), ...
+                '-dpng','-r130');close(f);
+            % Matriz de correlacoes das 8 entradas e do alvo, apenas treino.
+            R=corrcoef([D.raw_inputs_train, D.ytr_original]);
+            f=figure('visible','off','position',[100 100 800 720]);
+            imagesc(R,[-1 1]); axis equal tight;
+            colorbar; colormap(jet(256));
+            set(gca,'xtick',1:9,'ytick',1:9, ...
+                'xticklabel',{'Cement','Slag','Fly ash','Water', ...
+                'SP','Coarse agg.','Fine agg.','Age','Strength'}, ...
+                'yticklabel',{'Cement','Slag','Fly ash','Water', ...
+                'SP','Coarse agg.','Fine agg.','Age','Strength'});
+            xtickangle(45);
+            title('Concrete: Pearson correlation matrix (train only)');
+            print(f,fullfile(outdir,'concrete_correlation_matrix.png'), ...
+                '-dpng','-r140');close(f);
+            f=figure('visible','off','position',[100 100 1100 760]);
+            for k=1:8
+                subplot(2,4,k);
+                plot(D.raw_inputs_train(:,k),D.ytr_original,'.', ...
+                    'markersize',4);
+                xlabel(sprintf('Input %d',k));
+                ylabel('Strength (MPa)'); grid on;
+            end
+            print(f,fullfile(outdir,'concrete_inputs_vs_target.png'), ...
+                '-dpng','-r140');close(f);
+        else
+            % Ciclo mensal do conjunto de treino, sem dados de teste.
+            f=figure('visible','off');
+            % As observacoes da serie formam temperaturas diarias.
+            months_train=datevec(D.train_dates);
+            % O padrao anual aqui e descritivo; sem ajuste de modelos.
+            monthly=zeros(12,1);
+            for k=1:12
+                z=D.ytr_original;
+                % O agrupamento usa apenas datas cronologicas de treino.
+                v=z(months_train(:,2)==k);
+                if isempty(v),monthly(k)=NaN;
+                else monthly(k)=mean(v);end
+            end
+            if any(isfinite(monthly))
+                plot(1:12,monthly,'o-');grid on;
+                xlabel('Month');ylabel('Mean temperature (C)');
+                title('Melbourne annual cycle - train only');
+                print(f,fullfile(outdir,'melbourne_annual_cycle.png'), ...
+                    '-dpng','-r130');
+            end
+            close(f);
+            % Autocorrelacao implementada sem toolbox.
+            % Considera pares efetivamente separados por k dias;
+            % assim as duas falhas no calendario nao criam lags falsos.
+            maxlag=30;
+            rho=NaN(maxlag,1);
+            train_dates=D.train_dates(:);
+            train_y=D.ytr_original(:);
+            for lag=1:maxlag
+                [tf,idx]=ismember(train_dates-lag,train_dates);
+                yy=train_y(tf);
+                xx=train_y(idx(tf));
+                if numel(yy)>2 && std(xx)>0 && std(yy)>0
+                    cc=corrcoef(xx,yy);
+                    rho(lag)=cc(1,2);
+                end
+            end
+            f=figure('visible','off');
+            stem(1:maxlag,rho,'filled'); grid on;
+            xlabel('Lag (days)');ylabel('Autocorrelation');
+            title('Melbourne: sample autocorrelation (training only)');
+            print(f,fullfile(outdir,'melbourne_autocorrelation.png'), ...
+                '-dpng','-r140');close(f);
+            % T(t) contra T(t+1), apenas datas consecutivas.
+            [hasprev,previx]=ismember(train_dates-1,train_dates);
+            tx=train_y(previx(hasprev));
+            ty=train_y(hasprev);
+            f=figure('visible','off');
+            plot(tx,ty,'.','markersize',5);grid on;
+            xlabel('T(t) (C)');ylabel('T(t+1) (C)');
+            title('Melbourne: consecutive-day temperatures (train only)');
+            print(f,fullfile(outdir,'melbourne_lag1_scatter.png'), ...
+                '-dpng','-r140');close(f);
+            % Detectar saltos de temperatura e registar candidatos
+            % para inspeccao, sem remover automaticamente dados.
+            changes=abs(ty-tx);
+            cutoff=mean(changes)+3*std(changes);
+            fid=fopen(fullfile(outdir,'melbourne_abrupt_changes.csv'),'w');
+            if fid>=0
+                fprintf(fid,'date_serial,previous_temp,current_temp,change\n');
+                jj=find(hasprev);
+                for ii=1:numel(changes)
+                    if changes(ii)>cutoff
+                        fprintf(fid,'%.0f,%.8g,%.8g,%.8g\n', ...
+                            train_dates(jj(ii)),tx(ii),ty(ii),changes(ii));
+                    end
+                end
+                fclose(fid);
+            end
+        end
+    catch err
+        fprintf('AVISO: EDA visual indisponivel: %s\n',err.message);
+        try close all; catch, end
+    end
 end
